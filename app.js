@@ -61,7 +61,8 @@ window.addEventListener("orientationchange", () => {
 
 /* ═══════════════ AUDIO — synthesized temple sounds ═══════ */
 const audio = (() => {
-  let ctx = null, master = null, bgm = null, noiseBuf = null;
+  let ctx = null, master = null, bgm = null, bgmGain = null, noiseBuf = null;
+  let worldSuspended = false;
   let muted = false;
   try { muted = localStorage.getItem("wed-muted") === "1"; } catch {}
   let bgmFadeToken = 0;
@@ -80,28 +81,55 @@ const audio = (() => {
     for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
   };
 
-  /* Background score — the real instrument, started inside the tap gesture */
+  const getBgmLevel = () => bgmGain ? bgmGain.gain.value : bgm.volume;
+  const setBgmLevel = (value) => {
+    if (bgmGain) bgmGain.gain.value = value;
+    else bgm.volume = value;
+  };
+
+  const playBgm = (duration = 1900) => {
+    if (!bgm || muted || worldSuspended || document.hidden) return;
+    const token = bgmFadeToken;
+    bgm.play().then(() => {
+      if (token === bgmFadeToken && !worldSuspended && !document.hidden && !muted) {
+        fadeBgmTo(0.32, duration);
+      }
+    }).catch(() => {}); // The sound button can retry when playback was blocked.
+  };
+
+  /* Start only after a trusted tap. WebAudio gain also fades on iOS. */
   const startBgm = () => {
-    if (bgm || !CFG.bgm) return;
-    bgm = new Audio(CFG.bgm);
-    bgm.preload = "metadata";
-    bgm.loop = true;
-    bgm.playsInline = true;
-    bgm.volume = 0;
-    bgm.muted = muted;
-    bgm.play().then(() => fadeBgmTo(0.32, 1900)).catch(() => {});
+    if (!CFG.bgm) return;
+    if (!bgm) {
+      bgm = new Audio();
+      bgm.preload = "none";
+      bgm.loop = true;
+      bgm.playsInline = true;
+      if (ctx && master) {
+        const gain = ctx.createGain();
+        try {
+          gain.connect(master);
+          ctx.createMediaElementSource(bgm).connect(gain);
+          bgmGain = gain;
+        } catch { gain.disconnect(); }
+      }
+      setBgmLevel(0);
+      bgm.muted = muted;
+      bgm.src = CFG.bgm;
+    }
+    if (bgm.paused) playBgm();
   };
 
   const fadeBgmTo = (target, duration = 600, pauseAtEnd = false) => {
     if (!bgm) return;
     const token = ++bgmFadeToken;
-    const from = bgm.volume;
+    const from = getBgmLevel();
     const started = performance.now();
     const step = (now) => {
       if (token !== bgmFadeToken || !bgm) return;
       const p = Math.min(1, (now - started) / Math.max(1, duration));
       const eased = 1 - Math.pow(1 - p, 2);
-      bgm.volume = from + (target - from) * eased;
+      setBgmLevel(from + (target - from) * eased);
       if (p < 1) requestAnimationFrame(step);
       else if (pauseAtEnd) bgm.pause();
     };
@@ -177,11 +205,18 @@ const audio = (() => {
     muted = !muted;
     try { localStorage.setItem("wed-muted", muted ? "1" : "0"); } catch {}
     if (master) master.gain.linearRampToValueAtTime(muted ? 0 : 1, ctx.currentTime + 0.3);
-    if (bgm) bgm.muted = muted;
+    if (bgm) {
+      bgm.muted = muted;
+      if (!muted && !worldSuspended && !document.hidden) {
+        if (bgm.paused) playBgm(450);
+        else fadeBgmTo(0.32, 450);
+      }
+    }
     return muted;
   };
 
   const fadeForWorld = (duration = 720) => {
+    worldSuspended = true;
     if (ctx && master) {
       const now = ctx.currentTime;
       master.gain.cancelScheduledValues(now);
@@ -192,15 +227,17 @@ const audio = (() => {
   };
 
   const pauseForWorld = () => {
+    worldSuspended = true;
     ++bgmFadeToken;
     if (bgm) {
       bgm.pause();
-      bgm.volume = 0;
+      setBgmLevel(0);
     }
     if (ctx && ctx.state !== "closed") ctx.suspend().catch(() => {});
   };
 
   const restoreAfterWorld = () => {
+    worldSuspended = false;
     ++bgmFadeToken;
     if (ctx && ctx.state !== "closed") ctx.resume().catch(() => {});
     if (ctx && master) {
@@ -210,14 +247,20 @@ const audio = (() => {
       master.gain.linearRampToValueAtTime(muted ? 0.0001 : 1, now + 0.45);
     }
     if (bgm && !muted) {
-      bgm.volume = 0;
-      bgm.play().then(() => fadeBgmTo(0.32, 650)).catch(() => {});
+      setBgmLevel(0);
+      playBgm(650);
     }
   };
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { ctx && ctx.suspend(); bgm && bgm.pause(); }
-    else { ctx && ctx.resume(); bgm && !muted && bgm.play().catch(() => {}); }
+    if (document.hidden) {
+      ++bgmFadeToken;
+      if (ctx) ctx.suspend().catch(() => {});
+      if (bgm) bgm.pause();
+    } else if (!worldSuspended) {
+      if (ctx) ctx.resume().catch(() => {});
+      playBgm(450);
+    }
   });
 
   return {

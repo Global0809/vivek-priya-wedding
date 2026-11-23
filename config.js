@@ -6,6 +6,7 @@
   const palaceQuery = "The Riyasat Rajwada Palace Amar Vilas Wazirpur New Delhi";
 
   window.WEDDING_CONFIG = {
+    bgm: "assets/audio/wedding-flute.m4a",
     wedding: {
       dateISO: "2026-12-12T10:00:00+05:30",
     },
